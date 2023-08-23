@@ -2598,7 +2598,7 @@ static inline int deny_write_access(struct file *file)
 }
 static inline void put_write_access(struct inode * inode)
 {
-	atomic_dec(&inode->i_writecount);
+	atomic_dec_if_positive(&inode->i_writecount);
 }
 static inline void allow_write_access(struct file *file)
 {

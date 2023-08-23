@@ -1365,6 +1365,61 @@ static void test_share_fork(char *banner, char *b_suffix)
 	close(fd);
 }
 
+static char *const script_argv[] = { "true", NULL };
+static char *const script_env[] = { NULL };
+
+static void test_exec_fd(int fd)
+{
+	int err, pid, status;
+
+	pid = fork();
+	if (pid < 0) {
+		printf("fork()");
+		abort();
+	}
+
+	if (!pid) {
+		execveat(fd, "", script_argv, script_env, AT_EMPTY_PATH);
+		_exit(errno);
+	}
+
+	while (waitpid(pid, &status, 0) != pid) {
+		if (errno == EINTR)
+			continue;
+		printf("waitpid(child=%d)\n", pid);
+		abort();
+	}
+
+	if (status != 0) {
+		printf("child exited with status=%d\n", status);
+		abort();
+	}
+}
+
+static const char script[] = "#!/bin/true";
+static const size_t script_len = sizeof(script) - 1;
+
+static void test_exec_reopen(void)
+{
+	int fd, fd2;
+	char path[128];
+
+	printf("%s REOPEN-EXEC\n", memfd_str);
+	fd = sys_memfd_create("kern_memfd_exec_reopen", 0);
+	if (fd < 0) {
+		printf("memfd_create failed: %m\n");
+		abort();
+	}
+	if (write(fd, script, script_len) != script_len) {
+		printf("write error");
+		abort();
+	}
+
+	fd2 = mfd_assert_reopen_fd(fd);
+	close(fd);
+	test_exec_fd(fd2);
+}
+
 int main(int argc, char **argv)
 {
 	pid_t pid;
@@ -1389,6 +1444,7 @@ int main(int argc, char **argv)
 
 	test_create();
 	test_basic();
+	test_exec_reopen();
 	test_exec_seal();
 	test_exec_no_seal();
 	test_noexec_seal();
