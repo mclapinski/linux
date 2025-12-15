@@ -42,6 +42,13 @@ function skip() {
 function fail() {
 	local msg=${1:-""}
 
+	local serial_log="$tmp_dir/qemu.serial"
+	if [[ -f "$serial_log" ]]; then
+		echo "=== QEMU Serial Output ===" >&2
+		cat "$serial_log" >&2
+		echo "==========================" >&2
+	fi
+
 	ktap_test_fail "$msg"
 	exit "$KSFT_FAIL"
 }
