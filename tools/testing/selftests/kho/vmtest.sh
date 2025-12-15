@@ -66,6 +66,8 @@ CONFIG_DEBUG_KERNEL=y
 CONFIG_DEBUG_VM=y
 CONFIG_DEBUG_VM_PGFLAGS=y
 CONFIG_SMP=y
+CONFIG_SPARSEMEM=y
+CONFIG_SPARSEMEM_VMEMMAP=y
 CONFIG_DEFERRED_STRUCT_PAGE_INIT=y
 $arch_kconfig
 EOF
@@ -109,9 +111,9 @@ function run_qemu() {
 	local kernel=$3
 	local serial="$tmp_dir/qemu.serial"
 
-	cmdline="$cmdline kho=on panic=-1"
+	cmdline="$cmdline kho=on panic=-1 test_kho.exhaust_lowmem=1 test_kho.max_mem=536870912"
 
-	$qemu_cmd -m 1G -smp 2 -no-reboot -nographic -nodefaults \
+	$qemu_cmd -m 8G -smp 4 -no-reboot -nographic -nodefaults \
 		  -accel kvm -accel hvf -accel tcg  \
 		  -serial file:"$serial" \
 		  -append "$cmdline" \

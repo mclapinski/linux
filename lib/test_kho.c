@@ -27,8 +27,18 @@
 #define KHO_TEST_FDT	"kho_test"
 #define KHO_TEST_COMPAT "kho-test-v1"
 
-static long max_mem = (PAGE_SIZE << MAX_PAGE_ORDER) * 2;
+static long max_mem = SZ_256M;
 module_param(max_mem, long, 0644);
+
+/*
+ * When exhaust_lowmem is set, the test will first allocate pages to
+ * exhaust lower physical memory, forcing subsequent test allocations
+ * to come from higher physical addresses. This helps trigger bugs
+ * related to CONFIG_DEFERRED_STRUCT_PAGE_INIT where struct pages for
+ * high memory may not be initialized when KHO tries to access them.
+ */
+static bool exhaust_lowmem;
+module_param(exhaust_lowmem, bool, 0644);
 
 struct kho_test_state {
 	unsigned int nr_folios;
@@ -158,16 +168,84 @@ err_free_fdt:
 	folio_put(state->fdt);
 	return err;
 }
+static struct folio **kho_test_exhaust_lowmem(unsigned long *nr_exhaust)
+{
+	struct folio **exhaust_folios;
+	unsigned long max_exhaust;
+	unsigned long count = 0;
+	phys_addr_t highest_phys = 0;
+
+	*nr_exhaust = 0;
+
+	max_exhaust = SZ_2G >> PAGE_SHIFT;
+
+	exhaust_folios = kvmalloc_array(max_exhaust, sizeof(*exhaust_folios),
+					GFP_KERNEL);
+	if (!exhaust_folios) {
+		pr_warn("Failed to allocate exhaust folio array\n");
+		return NULL;
+	}
+
+	/*
+	 * Allocate order-0 pages to fragment and exhaust low memory.
+	 * We intentionally don't use higher orders to maximize fragmentation.
+	 */
+	while (count < max_exhaust) {
+		struct folio *folio;
+		phys_addr_t phys;
+
+		folio = folio_alloc(GFP_KERNEL | __GFP_NORETRY | __GFP_NOWARN, 0);
+		if (!folio)
+			break;
+
+		phys = folio_pfn(folio) << PAGE_SHIFT;
+		if (phys > highest_phys)
+			highest_phys = phys;
+
+		exhaust_folios[count++] = folio;
+	}
+
+	pr_info("Exhausted %lu pages, highest phys addr: 0x%llx\n",
+		count, (unsigned long long)highest_phys);
+
+	*nr_exhaust = count;
+	return exhaust_folios;
+}
+
+static void kho_test_release_exhaust(struct folio **exhaust_folios,
+				     unsigned long nr_exhaust)
+{
+	unsigned long i;
+
+	if (!exhaust_folios)
+		return;
+
+	for (i = 0; i < nr_exhaust; i++)
+		folio_put(exhaust_folios[i]);
+
+	kvfree(exhaust_folios);
+}
 
 static int kho_test_generate_data(struct kho_test_state *state)
 {
+	struct folio **exhaust_folios = NULL;
+	unsigned long nr_exhaust = 0;
+	phys_addr_t min_phys = ~0ULL;
+	phys_addr_t max_phys = 0;
 	size_t alloc_size = 0;
 	__wsum csum = 0;
+
+	if (exhaust_lowmem) {
+		exhaust_folios = kho_test_exhaust_lowmem(&nr_exhaust);
+		if (!exhaust_folios)
+			pr_warn("Low memory exhaustion failed, continuing anyway\n");
+	}
 
 	while (alloc_size < max_mem) {
 		int order = get_random_u32() % NR_PAGE_ORDERS;
 		struct folio *folio;
 		unsigned int size;
+		phys_addr_t phys;
 		void *addr;
 
 		/*
@@ -185,6 +263,12 @@ static int kho_test_generate_data(struct kho_test_state *state)
 		if (!folio)
 			goto err_free_folios;
 
+		phys = folio_pfn(folio) << PAGE_SHIFT;
+		if (phys < min_phys)
+			min_phys = phys;
+		if (phys > max_phys)
+			max_phys = phys;
+
 		state->folios[state->nr_folios++] = folio;
 		addr = folio_address(folio);
 		get_random_bytes(addr, size);
@@ -192,10 +276,17 @@ static int kho_test_generate_data(struct kho_test_state *state)
 		alloc_size += size;
 	}
 
+	kho_test_release_exhaust(exhaust_folios, nr_exhaust);
+
+	pr_info("Allocated %u folios, phys range: 0x%llx - 0x%llx\n",
+		state->nr_folios, (unsigned long long)min_phys,
+		(unsigned long long)max_phys);
+
 	state->csum = csum;
 	return 0;
 
 err_free_folios:
+	kho_test_release_exhaust(exhaust_folios, nr_exhaust);
 	for (int i = 0; i < state->nr_folios; i++)
 		folio_put(state->folios[i]);
 	state->nr_folios = 0;
