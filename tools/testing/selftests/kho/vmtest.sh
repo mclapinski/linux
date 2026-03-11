@@ -11,6 +11,7 @@ kernel_dir=$(realpath "$test_dir/../../../..")
 tmp_dir=$(mktemp -d /tmp/kho-test.XXXXXXXX)
 headers_dir="$tmp_dir/usr"
 initrd="$tmp_dir/initrd.cpio"
+initrd_temp="$tmp_dir/initrd_temp.cpio"
 
 source "$test_dir/../kselftest/ktap_helpers.sh"
 
@@ -94,10 +95,8 @@ EOF
 function mkinitrd() {
 	local kernel=$1
 
-	"$CROSS_COMPILE"gcc -s -static -Os -nostdinc -nostdlib \
+	"$CROSS_COMPILE"gcc -s -static -Os \
 			-fno-asynchronous-unwind-tables -fno-ident \
-			-I "$headers_dir/include" \
-			-I "$kernel_dir/tools/include/nolibc" \
 			-o "$tmp_dir/init" "$test_dir/init.c"
 
 	cat > "$tmp_dir/cpio_list" <<EOF
@@ -109,6 +108,18 @@ file /init $tmp_dir/init 0755 0 0
 file /kernel $kernel 0644 0 0
 EOF
 
+	"$build_dir/usr/gen_init_cpio" "$tmp_dir/cpio_list" > "$initrd_temp"
+
+	cat > "$tmp_dir/cpio_list" <<EOF
+dir /dev 0755 0 0
+dir /proc 0755 0 0
+dir /debugfs 0755 0 0
+nod /dev/console 0600 0 0 c 5 1
+file /init $tmp_dir/init 0755 0 0
+file /kernel $kernel 0644 0 0
+file /initrd $initrd_temp 0755 0 0
+EOF
+
 	"$build_dir/usr/gen_init_cpio" "$tmp_dir/cpio_list" > "$initrd"
 }
 
@@ -118,7 +129,7 @@ function run_qemu() {
 	local kernel=$3
 	local serial="$tmp_dir/qemu.serial"
 
-	cmdline="$cmdline kho=on panic=-1 test_kho.exhaust_lowmem=1 test_kho.max_mem=536870912"
+	cmdline="$cmdline kho=on panic=-1 test_kho.exhaust_lowmem=1 ignore_loglevel earlyprintk=serial,ttyS0,115200 printk.time=1"
 
 	$qemu_cmd -m 8G -smp 4 -no-reboot -nographic -nodefaults \
 		  -accel kvm -accel hvf -accel tcg  \
@@ -127,7 +138,17 @@ function run_qemu() {
 		  -kernel "$kernel" \
 		  -initrd "$initrd"
 
-	grep "KHO restore succeeded" "$serial" &> /dev/null || fail "KHO failed"
+	local serial_log="$tmp_dir/qemu.serial"
+	if [[ -f "$serial_log" ]]; then
+		echo "=== QEMU Serial Output ===" >&2
+		cat "$serial_log" >&2
+		echo "==========================" >&2
+	fi
+	count="$(grep --text "KHO restore succeeded" $serial | wc -l)"
+	echo Successful restores: "$count"
+	if [[ $count -ne 4 ]]; then
+		fail "KHO failed"
+	fi
 }
 
 function target_to_arch() {
