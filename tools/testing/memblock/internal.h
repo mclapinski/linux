@@ -57,9 +57,6 @@ static inline bool __is_kernel(unsigned long addr)
 	return false;
 }
 
-#define for_each_valid_pfn(pfn, start_pfn, end_pfn)                     \
-       for ((pfn) = (start_pfn); (pfn) < (end_pfn); (pfn)++)
-
 static inline void init_deferred_page(unsigned long pfn, int nid)
 {
 }
